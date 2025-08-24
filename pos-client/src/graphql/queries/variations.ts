@@ -5,13 +5,17 @@ export const GET_VARIATIONS_PAGINATED = gql`
     $page: Int!,
     $limit: Int!,
     $search: String,
-    $status: String
+    $status: String,
+    $startDate: String,
+    $endDate: String
   ) {
     variationsPaginated(
       page: $page,
       limit: $limit,
       search: $search,
-      status: $status
+      status: $status,
+      startDate: $startDate,
+      endDate: $endDate
     ) {
       data {
         variationId

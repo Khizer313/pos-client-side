@@ -33,7 +33,7 @@ interface PartyPageProps {
   onStartDateChange?: (date: string) => void;
   onEndDateChange?: (date: string) => void;
   onClearDateRange?: () => void;
-  
+    extraControls?: React.ReactNode;
 }
 
 const PartyPage: React.FC<PartyPageProps> = ({
@@ -57,6 +57,10 @@ const PartyPage: React.FC<PartyPageProps> = ({
   onStartDateChange,
   onEndDateChange,
   onClearDateRange,
+
+
+
+  extraControls,
 }) => {
   // Note: activeFilter is now controlled from parent
 
@@ -173,6 +177,8 @@ const PartyPage: React.FC<PartyPageProps> = ({
             }}
           />
         )}
+                {extraControls && <div>{extraControls}</div>}
+
       </div>
 
       {/* Filters */}

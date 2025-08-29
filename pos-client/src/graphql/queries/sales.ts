@@ -10,6 +10,8 @@ export const GET_SALES_PAGINATED = gql`
     $paymentMethod: String
     $startDate: String
     $endDate: String
+      $filters: [FilterInput!]
+  $sort: SortInput
   ) {
     getSalesPaginated(
       page: $page
@@ -19,6 +21,8 @@ export const GET_SALES_PAGINATED = gql`
       paymentMethod: $paymentMethod
       startDate: $startDate
       endDate: $endDate
+          filters: $filters
+    sort: $sort
     ) {
       data {
         saleId

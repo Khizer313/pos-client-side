@@ -13,6 +13,8 @@ import type {
   GridColDef,
   GridPaginationModel,
   GridRenderCellParams,
+  GridFilterModel, 
+  GridSortModel
 
 } from "@mui/x-data-grid";
 import { useQuery, useMutation, NetworkStatus } from "@apollo/client";
@@ -214,7 +216,7 @@ const Sales: React.FC = () => {
   // store last refetch vars - for retry or toast contexts
   const lastRefetchVars = useRef<RefetchVars | null>(null);
 
-
+      
 
 
 
@@ -235,6 +237,11 @@ const customerOptions = customersData?.customersPaginated?.data || [];
 const productOptions = productsData?.productsPaginated?.data || [];
 
 
+
+
+
+const [filterModel, setFilterModel] = useState<GridFilterModel>({ items: [] });
+const [sortModel, setSortModel] = useState<GridSortModel>([]);
 
   /* =========================
      Helpers
@@ -271,20 +278,53 @@ const productOptions = productsData?.productsPaginated?.data || [];
      Apollo: Query & Mutations
   ========================= */
 
-  const { data, error, networkStatus, refetch } = useQuery(GET_SALES_PAGINATED, {
-    variables: {
-      page: paginationModel.page + 1,
-      limit: Math.max(10, Math.min(paginationModel.pageSize, 100)),
-      search: debouncedSearch || undefined,
-      status: activeFilter !== "All" ? activeFilter : undefined,
-      paymentMethod: paymentFilter !== "All" ? paymentFilter : undefined,
-      startDate: startDate || undefined,
-      endDate: endDate || undefined,
-    },
-    fetchPolicy: "cache-and-network",
+ 
+const { data, error, networkStatus, refetch } = useQuery(GET_SALES_PAGINATED, {
+  variables: {
+    page: paginationModel.page + 1,
+    limit: paginationModel.pageSize,
+    search: debouncedSearch || undefined,
+    status: activeFilter !== "All" ? activeFilter : undefined,
+    paymentMethod: paymentFilter !== "All" ? paymentFilter : undefined,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined,
+filters: filterModel.items
+  .filter(f => f.value !== undefined && f.value !== "")
+  .map(f => {
+    if (f.field === "customer") {
+      const matchedCustomer = customerOptions.find((c: Customer) =>
+        c.name.toLowerCase().includes(String(f.value).toLowerCase())
+      );
+      if (!matchedCustomer) return null; // skip this filter
+      return {
+        field: "customerId",
+        operator: f.operator,
+        value: String(matchedCustomer.customerId),
+      };
+    }
 
-    notifyOnNetworkStatusChange: true,
-  });
+    return {
+      field: f.field,
+      operator: f.operator,
+      value: String(f.value),
+    };
+  })
+  .filter(Boolean), // remove nulls
+
+
+
+    sort: sortModel[0]
+      ? { field: sortModel[0].field, direction: sortModel[0].sort }
+      : undefined,
+  },
+  fetchPolicy: "cache-and-network",
+  notifyOnNetworkStatusChange: true,
+});
+
+useEffect(() => {
+  refetch();
+}, [debouncedSearch, activeFilter, paymentFilter, startDate, endDate, filterModel, sortModel]);
+
 
   const [createSaleMutation] = useMutation(CREATE_SALE);
   const [updateSaleMutation] = useMutation(UPDATE_SALE);
@@ -311,49 +351,50 @@ const productOptions = productsData?.productsPaginated?.data || [];
      Handle incoming data
   ========================= */
 
-  useEffect(() => {
+/* =========================
+   Handle incoming data
+========================= */
+useEffect(() => {
   let cancelled = false;
 
   const handleData = async () => {
-    if (data?.salesPaginated?.data) {
-      const pageIdx = paginationModel.page;
+    if (!data?.getSalesPaginated?.data && !error) return;
 
-      const incoming: Sale[] = data.salesPaginated.data.map((s: Sale) => ({
-        ...s,
-        total: typeof s.total === "string" ? Number(s.total) : s.total,
-        items: (s.items || []).map((p: SaleItem) => ({
-          productName: p.productName,
-          ctn: Number(p.ctn) || 0,
-          pieces: Number(p.pieces) || 0,
-          quantity: Number(p.quantity) || 0,
-          price: Number(p.price) || 0,
-          total:
-            Number(p.total) ||
-            (Number(p.quantity) || 0) * (Number(p.price) || 0),
-        })),
-      }));
+    const incoming: Sale[] = (data?.getSalesPaginated?.data || []).map((s:Sale) => ({
+      ...s,
+      total: Number(s.total),
+      items: (s.items || []).map((p) => ({
+        productName: p.productName,
+        ctn: Number(p.ctn) || 0,
+        pieces: Number(p.pieces) || 0,
+        quantity: Number(p.quantity) || 0,
+        price: Number(p.price) || 0,
+        total: Number(p.total) || (Number(p.quantity) * Number(p.price)),
+      })),
+    }));
 
-      if (!cancelled) {
-        setSalePages((prev) => {
-          const newMap = new Map(prev);
-          newMap.set(pageIdx, incoming);
+    if (!cancelled) {
+      setSalePages((prev) => {
+        const newMap = new Map(prev);
+        newMap.set(paginationModel.page, incoming);
 
-          // Keep only last 10 pages
-          const keys = Array.from(newMap.keys()).sort((a, b) => a - b);
-          if (keys.length > 10) {
-            for (const k of keys.slice(0, keys.length - 10)) newMap.delete(k);
-          }
-          return newMap;
-        });
-      }
+        // Keep only last 10 pages
+        const keys = Array.from(newMap.keys()).sort((a, b) => a - b);
+        if (keys.length > 10) {
+          for (const k of keys.slice(0, keys.length - 10)) newMap.delete(k);
+        }
+        return newMap;
+      });
+    }
 
+    if (incoming.length) {
       try {
         await addSalesToDexie(incoming);
         await clearOldSales(1000);
       } catch (e) {
         console.log("dexie error ", e);
       }
-    } else if (!data && error) {
+    } else if (error) {
       const dexieSales = await getSalesFromDexie(
         paginationModel.page,
         paginationModel.pageSize
@@ -369,13 +410,11 @@ const productOptions = productsData?.productsPaginated?.data || [];
   };
 
   handleData();
-
   return () => {
     cancelled = true;
   };
-}, [data, error, paginationModel.page, paginationModel.pageSize]);
-
-  
+}, [data, error, paginationModel.page, paginationModel.pageSize]); // only necessary deps
+ 
   /* =========================
      Refetch control
   ========================= */
@@ -404,38 +443,77 @@ const productOptions = productsData?.productsPaginated?.data || [];
   );
 
   // changes that trigger refetch
-  useEffect(() => {
-    startTransition(() => {
-      throttledRefetch({
-        page: paginationModel.page + 1,
-        limit: paginationModel.pageSize,
-        search: debouncedSearch || undefined,
-        status: activeFilter !== "All" ? activeFilter : undefined,
-        paymentMethod: paymentFilter !== "All" ? paymentFilter : undefined,
-        startDate: startDate || undefined,
-        endDate: endDate || undefined,
-      });
-    });
-  }, [
-    debouncedSearch,
-    activeFilter,
-    paymentFilter,
-    startDate,
-    endDate,
-    paginationModel,
-    throttledRefetch,
-  ]);
+ useEffect(() => {
+  const vars: RefetchVars = {
+    page: paginationModel.page + 1,
+    limit: paginationModel.pageSize,
+    search: debouncedSearch || undefined,
+    status: activeFilter !== "All" ? activeFilter : undefined,
+    paymentMethod: paymentFilter !== "All" ? paymentFilter : undefined,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined,
+    
+  };
 
+  const handler = async () => {
+    try {
+      await refetch(vars);
+    } catch (err) {
+      showToast(`🚫 ${(err as Error).message}`, "error");
+    }
+  };
+
+  startTransition(handler);
+}, [
+  debouncedSearch,
+  activeFilter,
+  paymentFilter,
+  startDate,
+  endDate,
+  paginationModel.page,
+  paginationModel.pageSize,
+  refetch,
+  showToast,
+]);
+
+
+// useEffect(() => {
+//   startTransition(() => {
+//     refetch({
+//       page: paginationModel.page + 1,
+//       limit: paginationModel.pageSize,
+//       search: debouncedSearch || undefined,
+//       status: activeFilter !== "All" ? activeFilter : undefined,
+//       paymentMethod: paymentFilter !== "All" ? paymentFilter : undefined,
+//       startDate: startDate || undefined,
+//       endDate: endDate || undefined,
+//     });
+//   });
+// }, [
+//   debouncedSearch,
+//   activeFilter,
+//   paymentFilter,
+//   startDate,
+//   endDate,
+//   paginationModel.page,
+//   paginationModel.pageSize,
+//   refetch,
+// ]);
 
   
   /* =========================
      DataGrid rows/columns
   ========================= */
 
-  const currentPageRows: Sale[] = useMemo(
-    () => salePages.get(paginationModel.page) || [],
-    [salePages, paginationModel.page]
-  );
+  const currentPageRows: Sale[] = useMemo(() => {
+  // ✅ Use data directly if searching or filtering
+  if (debouncedSearch || activeFilter !== "All" || paymentFilter !== "All") {
+    return data?.getSalesPaginated?.data || [];
+  }
+  // ✅ Otherwise, use cached pages
+  return salePages.get(paginationModel.page) || [];
+}, [salePages, paginationModel.page, data, debouncedSearch, activeFilter, paymentFilter]);
+
 
 const rows = useMemo(
   () =>
@@ -521,7 +599,20 @@ const rows = useMemo(
   const columns: GridColDef[] = useMemo(
     () => [
       { field: "invoiceNo", headerName: "Invoice No", flex: 1 },
-      { field: "customer", headerName: "Customer", flex: 1 },
+ {
+  field: "customer",
+  headerName: "Customer",
+  flex: 1,
+  renderCell: (params: GridRenderCellParams<Sale>) => {
+    const customer = customerOptions.find(
+      (c: CustomerOption) => Number(c.customerId) === Number(params.row?.customerId)
+    );
+    return customer ? customer.name : "—";
+  },
+}
+
+
+,
       {
         field: "date",
         headerName: "Date",
@@ -614,9 +705,8 @@ const rows = useMemo(
     0
   );
 
-  const payload: CreateSaleInput = {
-  invoiceNo: editingSale?.invoiceNo || `INV-${Date.now()}`,
-  customerId: form.customerId,  // ✅ no TS error now
+const payload: CreateSaleInput = {
+  customerId: form.customerId,
   date: form.date,
   items: form.items.map((x) => ({
     productId: Number(x.productId),
@@ -632,6 +722,7 @@ const rows = useMemo(
   paymentMethod: form.paymentMethod,
   notes: form.notes,
 };
+
 
 
   try {
@@ -723,6 +814,9 @@ const rows = useMemo(
     [paginationModel.page, deleteSaleMutation, showToast]
   );
 
+console.log("GraphQL sales data:", data?.salesPaginated?.data);
+console.log("Mapped rows:", rows);
+console.log("GraphQL sales raw data:", data);
 
 
 
@@ -776,6 +870,7 @@ useEffect(() => {
             },
           ]}
           filters={["All", "Paid", "Pending"]}
+          
           searchTerm={searchTerm}
           onSearchChange={setSearchTerm}
           activeFilter={activeFilter}
@@ -1178,12 +1273,23 @@ useEffect(() => {
                     getRowId={(row) => row.saleId ?? row.invoiceNo}
                     paginationMode="server"
                     paginationModel={paginationModel}
+
                     onPaginationModelChange={(m) => {
                       startTransition(() => {
                         setPaginationModel(m);
                       });
                     }}
-                    rowCount={data?.salesPaginated?.total || 0}
+
+                      // 🔥 filtering
+  filterMode="server"
+  filterModel={filterModel}
+  onFilterModelChange={(newModel) => setFilterModel(newModel)}
+
+  // 🔥 sorting
+  sortingMode="server"
+  sortModel={sortModel}
+  onSortModelChange={(newModel) => setSortModel(newModel)}
+                    rowCount={data?.getSalesPaginated?.total || 0}
                     pageSizeOptions={[10, 20, 50]}
                     checkboxSelection
                     disableRowSelectionOnClick
